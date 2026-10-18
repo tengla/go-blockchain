@@ -16,7 +16,7 @@ func newKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 func TestTransactionVerify(t *testing.T) {
 	_, alice := newKey(t)
 	bobPub, _ := newKey(t)
-	if !NewTransaction(alice, bobPub, 10).Verify() {
+	if !NewTransaction(alice, bobPub, 10, 1).Verify() {
 		t.Fatal("Signed transaction should verify")
 	}
 }
@@ -24,7 +24,7 @@ func TestTransactionVerify(t *testing.T) {
 func TestTamperedTransactionFailsVerify(t *testing.T) {
 	_, alice := newKey(t)
 	bobPub, _ := newKey(t)
-	tx := NewTransaction(alice, bobPub, 10)
+	tx := NewTransaction(alice, bobPub, 10, 1)
 	tx.Amount = 1000
 	if tx.Verify() {
 		t.Fatal("Transaction with a changed amount should not verify")
@@ -36,7 +36,7 @@ func TestTransactionSignedByWrongKeyFailsVerify(t *testing.T) {
 	bobPub, _ := newKey(t)
 	_, mallory := newKey(t)
 	// mallory signs, but claims the money comes from alice
-	tx := NewTransaction(mallory, bobPub, 10)
+	tx := NewTransaction(mallory, bobPub, 10, 1)
 	tx.From = alicePub
 	if tx.Verify() {
 		t.Fatal("Transaction not signed by the sender should not verify")
@@ -55,8 +55,40 @@ func TestTransactionWithNonPositiveAmountFailsVerify(t *testing.T) {
 	_, alice := newKey(t)
 	bobPub, _ := newKey(t)
 	for _, amount := range []int{0, -10} {
-		if NewTransaction(alice, bobPub, amount).Verify() {
+		if NewTransaction(alice, bobPub, amount, 1).Verify() {
 			t.Fatalf("Transaction with amount %d should not verify", amount)
 		}
+	}
+}
+
+func TestCoinbaseVerify(t *testing.T) {
+	alicePub, alice := newKey(t)
+	if !NewCoinbase(alicePub).Verify() {
+		t.Fatal("Coinbase should verify")
+	}
+
+	tooMuch := NewCoinbase(alicePub)
+	tooMuch.Amount = Reward + 1
+	signed := NewCoinbase(alicePub)
+	signed.Signature = ed25519.Sign(alice, signed.signingPayload())
+	noOne := NewCoinbase(nil)
+	for name, tx := range map[string]*Transaction{
+		"more than the reward": tooMuch,
+		"a signature":          signed,
+		"no recipient":         noOne,
+	} {
+		if tx.Verify() {
+			t.Fatalf("Coinbase with %s should not verify", name)
+		}
+	}
+}
+
+func TestNonceIsSigned(t *testing.T) {
+	_, alice := newKey(t)
+	bobPub, _ := newKey(t)
+	tx := NewTransaction(alice, bobPub, 10, 1)
+	tx.Nonce = 2
+	if tx.Verify() {
+		t.Fatal("Transaction with a changed nonce should not verify")
 	}
 }

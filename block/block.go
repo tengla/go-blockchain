@@ -66,10 +66,8 @@ func (b *Block) GenerateHash() string {
 }
 
 func (b *Block) Verify(difficulty int) bool {
-	for _, t := range b.Transactions {
-		if !t.Verify() {
-			return false
-		}
+	if verifyTransactions(b.Transactions) != nil {
+		return false
 	}
 	if b.MerkleRoot != MerkleRoot(b.Transactions) {
 		return false
@@ -84,6 +82,20 @@ func (b *Block) Verify(difficulty int) bool {
 		return true
 	}
 	return b.Hash == b.Next.PreviousHash
+}
+
+// verifyTransactions checks each transaction on its own, and that only the
+// first one can be a coinbase, so a block pays at most one reward
+func verifyTransactions(txs []*Transaction) error {
+	for i, t := range txs {
+		if !t.Verify() {
+			return fmt.Errorf("invalid transaction from %x", t.From)
+		}
+		if t.IsCoinbase() && i != 0 {
+			return fmt.Errorf("coinbase must be the first transaction, found at %d", i)
+		}
+	}
+	return nil
 }
 
 func (b *Block) DataToJSON() string {

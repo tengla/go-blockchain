@@ -9,7 +9,7 @@ func newTransactions(t *testing.T, n int) []*Transaction {
 	bobPub, _ := newKey(t)
 	txs := make([]*Transaction, n)
 	for i := range txs {
-		txs[i] = NewTransaction(alice, bobPub, i+1)
+		txs[i] = NewTransaction(alice, bobPub, i+1, i+1)
 	}
 	return txs
 }

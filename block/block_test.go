@@ -36,12 +36,14 @@ func TestMineBlock(t *testing.T) {
 }
 
 func TestHashSurvivesJSONRoundTrip(t *testing.T) {
-	_, alice := newKey(t)
+	alicePub, alice := newKey(t)
 	bobPub, _ := newKey(t)
 	c := CreateChain(1)
-	c.AddBlock(NewBlock(map[string]string{
+	if err := c.AddBlock(NewBlock(map[string]string{
 		"Name": "Block 1",
-	}, NewTransaction(alice, bobPub, 10)))
+	}, NewCoinbase(alicePub), NewTransaction(alice, bobPub, 10, 1))); err != nil {
+		t.Fatal(err)
+	}
 	var b Block
 	if err := json.Unmarshal([]byte(c.Genesis.Next.ToJSON()), &b); err != nil {
 		t.Fatal(err)

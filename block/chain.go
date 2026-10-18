@@ -1,6 +1,7 @@
 package block
 
 import (
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"time"
@@ -18,6 +19,7 @@ type Chain struct {
 	Genesis        *Block
 	Difficulty     int
 	numberOfBlocks int
+	ledger         *ledger
 }
 
 // IncrNumberOfBlocks
@@ -31,6 +33,7 @@ func CreateChain(difficulty int) *Chain {
 	chain := &Chain{
 		Created:    time.Now(),
 		Difficulty: difficulty,
+		ledger:     newLedger(),
 	}
 	b := NewBlock(map[string]string{
 		"Name": "Genesis Block",
@@ -56,6 +59,7 @@ func LoadChain(difficulty int, blocks []*Block) (*Chain, error) {
 		Created:    time.Now(),
 		Genesis:    g,
 		Difficulty: difficulty,
+		ledger:     newLedger(),
 	}
 	for _, b := range blocks[1:] {
 		if err := chain.AppendBlock(b); err != nil {
@@ -99,18 +103,33 @@ func (c *Chain) Blocks() []*Block {
 	return blocks
 }
 
-// AddBlock mines b onto the end of the chain, unless it has an invalid transaction
+// Balance is what the owner of key has to spend
+func (c *Chain) Balance(key ed25519.PublicKey) int {
+	return c.ledger.balance(key)
+}
+
+// Nonce is the nonce of the last transaction sent by the owner of key, so
+// their next one needs Nonce + 1
+func (c *Chain) Nonce(key ed25519.PublicKey) int {
+	return c.ledger.nonce(key)
+}
+
+// AddBlock mines b onto the end of the chain, unless it has an invalid
+// transaction or one the sender can't afford
 func (c *Chain) AddBlock(b *Block) error {
-	for _, t := range b.Transactions {
-		if !t.Verify() {
-			return fmt.Errorf("invalid transaction from %x", t.From)
-		}
+	if err := verifyTransactions(b.Transactions); err != nil {
+		return err
+	}
+	ledger, err := c.ledger.apply(b.Transactions)
+	if err != nil {
+		return err
 	}
 	block := c.Tip()
 	b.PreviousHash = block.Hash
 	b.Idx = c.IncrNumberOfBlocks()
 	b.MineBlock(c.Difficulty)
 	block.Next = b
+	c.ledger = ledger
 	return nil
 }
 
@@ -123,8 +142,13 @@ func (c *Chain) AppendBlock(b *Block) error {
 	if !b.Verify(c.Difficulty) {
 		return fmt.Errorf("block %d is invalid", b.Idx)
 	}
+	ledger, err := c.ledger.apply(b.Transactions)
+	if err != nil {
+		return fmt.Errorf("block %d: %w", b.Idx, err)
+	}
 	c.IncrNumberOfBlocks()
 	block.Next = b
+	c.ledger = ledger
 	return nil
 }
 

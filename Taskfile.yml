@@ -13,6 +13,7 @@ tasks:
     cmds:
     - go build -o dist/block-chain cmd/block/main.go
     - go build -o dist/node cmd/server/main.go
+    - go build -o dist/tx cmd/tx/main.go
   01:run: ./dist/node -addr :3001
   02:run: ./dist/node -addr :3002 -peers http://localhost:3001
   deploy:

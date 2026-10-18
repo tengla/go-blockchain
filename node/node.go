@@ -2,6 +2,7 @@ package node
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/tengla/fibro/block"
+	"github.com/tengla/fibro/wallet"
 )
 
 // client is shared by every node in the process, for talking to peers
@@ -22,13 +24,16 @@ type Node struct {
 	mu    sync.Mutex
 	chain *block.Chain
 	peers []string
+	miner ed25519.PublicKey
 }
 
-// New creates a node with a fresh chain. Peers are base URLs such as
+// New creates a node with a fresh chain. The reward for each block it mines
+// goes to miner, or to no one if miner is nil. Peers are base URLs such as
 // http://localhost:3001
-func New(difficulty int, peers ...string) *Node {
+func New(difficulty int, miner ed25519.PublicKey, peers ...string) *Node {
 	n := &Node{
 		chain: block.CreateChain(difficulty),
+		miner: miner,
 	}
 	for _, p := range peers {
 		n.AddPeer(p)
@@ -55,8 +60,25 @@ func (n *Node) Blocks() []*block.Block {
 	return n.chain.Blocks()
 }
 
+// Account returns what the owner of key has to spend, and the nonce of the
+// last transaction they sent
+func (n *Node) Account(key ed25519.PublicKey) (balance, nonce int) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.chain.Balance(key), n.chain.Nonce(key)
+}
+
 // Mine mines a new block onto the chain and sends it to every peer
 func (n *Node) Mine(data map[string]string, txs ...*block.Transaction) (*block.Block, error) {
+	for _, t := range txs {
+		// otherwise anyone could post a coinbase that pays themselves
+		if t.IsCoinbase() {
+			return nil, errors.New("the node adds the coinbase itself")
+		}
+	}
+	if n.miner != nil {
+		txs = append([]*block.Transaction{block.NewCoinbase(n.miner)}, txs...)
+	}
 	n.mu.Lock()
 	b := block.NewBlock(data, txs...)
 	err := n.chain.AddBlock(b)
@@ -128,10 +150,11 @@ func (n *Node) Sync() {
 
 // App returns the node's HTTP API:
 //
-//	GET  /blocks  the node's chain
-//	POST /blocks  receive a block from a peer
-//	POST /mine    mine a block: {"Data": {...}, "Transactions": [...]}
-//	POST /peers   add a peer and sync from it: {"URL": "http://..."}
+//	GET  /blocks            the node's chain
+//	POST /blocks            receive a block from a peer
+//	GET  /account?key=...   a public key's {"Balance": 50, "Nonce": 1}
+//	POST /mine              mine a block: {"Data": {...}, "Transactions": [...]}
+//	POST /peers             add a peer and sync from it: {"URL": "http://..."}
 func (n *Node) App() *fiber.App {
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 
@@ -148,6 +171,16 @@ func (n *Node) App() *fiber.App {
 			return c.Status(fiber.StatusBadRequest).SendString(err.Error())
 		}
 		return c.SendStatus(fiber.StatusOK)
+	})
+
+	app.Get("/account", func(c *fiber.Ctx) error {
+		key, err := wallet.DecodePublic(c.Query("key"))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).SendString("key: " + err.Error())
+		}
+		var resp struct{ Balance, Nonce int }
+		resp.Balance, resp.Nonce = n.Account(key)
+		return sendJSON(c, resp)
 	})
 
 	app.Post("/mine", func(c *fiber.Ctx) error {

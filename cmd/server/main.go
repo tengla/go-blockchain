@@ -1,17 +1,20 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"flag"
 	"log"
 	"strings"
 
 	"github.com/tengla/fibro/node"
+	"github.com/tengla/fibro/wallet"
 )
 
 var (
 	addr       = flag.String("addr", ":3000", "The address to listen on")
 	peers      = flag.String("peers", "", "Comma-separated peer URLs, such as http://localhost:3001")
 	difficulty = flag.Int("difficulty", 3, "The mining difficulty, which must match the peers'")
+	miner      = flag.String("miner", "", "The public key file the mining reward is paid to. Without one, no reward is paid")
 )
 
 func main() {
@@ -25,7 +28,15 @@ func main() {
 		}
 	}
 
-	n := node.New(*difficulty, peerList...)
+	var minerKey ed25519.PublicKey
+	if *miner != "" {
+		var err error
+		if minerKey, err = wallet.ReadPublic(*miner); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	n := node.New(*difficulty, minerKey, peerList...)
 	n.Sync()
 
 	log.Printf("listening on %s with %d peers", *addr, len(peerList))

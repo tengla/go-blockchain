@@ -6,18 +6,25 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"net/url"
 	"testing"
 
 	"github.com/tengla/fibro/block"
+	"github.com/tengla/fibro/wallet"
 )
 
 // startNode runs a node on a free local port and returns it with its URL
 func startNode(t *testing.T, difficulty int) (*Node, string) {
+	return startMiner(t, difficulty, nil)
+}
+
+// startMiner is startNode for a node that pays its rewards to miner
+func startMiner(t *testing.T, difficulty int, miner ed25519.PublicKey) (*Node, string) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := New(difficulty)
+	n := New(difficulty, miner)
 	app := n.App()
 	go app.Listener(ln)
 	t.Cleanup(func() {
@@ -142,7 +149,7 @@ func TestRejectsInvalidTransactionOverHTTP(t *testing.T) {
 	_, url := startNode(t, 1)
 	_, alice, _ := ed25519.GenerateKey(nil)
 	bobPub, _, _ := ed25519.GenerateKey(nil)
-	tx := block.NewTransaction(alice, bobPub, 10)
+	tx := block.NewTransaction(alice, bobPub, 10, 1)
 	tx.Amount = 1000
 	body, _ := json.Marshal(map[string]interface{}{
 		"Data":         map[string]string{"Name": "Block 1"},
@@ -169,5 +176,85 @@ func TestIgnoresChainWithDifferentDifficulty(t *testing.T) {
 	b.Sync()
 	if len(b.Blocks()) != 1 {
 		t.Fatal("Node should not adopt a chain mined at a different difficulty")
+	}
+}
+
+func postMine(t *testing.T, nodeURL string, txs ...*block.Transaction) int {
+	body, _ := json.Marshal(map[string]interface{}{"Transactions": txs})
+	resp, err := http.Post(nodeURL+"/mine", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+func getAccount(t *testing.T, nodeURL string, key ed25519.PublicKey) (balance, nonce int) {
+	resp, err := http.Get(nodeURL + "/account?key=" + url.QueryEscape(wallet.Encode(key)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var account struct{ Balance, Nonce int }
+	if err := json.NewDecoder(resp.Body).Decode(&account); err != nil {
+		t.Fatal(err)
+	}
+	return account.Balance, account.Nonce
+}
+
+func TestMinerIsPaidAndCanSpend(t *testing.T) {
+	minerPub, miner, _ := ed25519.GenerateKey(nil)
+	bobPub, _, _ := ed25519.GenerateKey(nil)
+	a, aURL := startMiner(t, 1, minerPub)
+	b, bURL := startNode(t, 1)
+	connect(a, aURL, b, bURL)
+
+	if status := postMine(t, aURL); status != http.StatusOK {
+		t.Fatalf("Mining should succeed, got status %d", status)
+	}
+	if balance, _ := getAccount(t, aURL, minerPub); balance != block.Reward {
+		t.Fatalf("Miner should have earned %d, has %d", block.Reward, balance)
+	}
+
+	// the second block pays another reward, so the miner has 2 * Reward - 10
+	if status := postMine(t, aURL, block.NewTransaction(miner, bobPub, 10, 1)); status != http.StatusOK {
+		t.Fatalf("Miner should be able to spend the reward, got status %d", status)
+	}
+	for _, u := range []string{aURL, bURL} {
+		if balance, _ := getAccount(t, u, bobPub); balance != 10 {
+			t.Fatalf("Bob should have 10 on %s, has %d", u, balance)
+		}
+		if balance, nonce := getAccount(t, u, minerPub); balance != 2*block.Reward-10 || nonce != 1 {
+			t.Fatalf("Miner should have %d and nonce 1 on %s, has %d and %d", 2*block.Reward-10, u, balance, nonce)
+		}
+	}
+}
+
+func TestRejectsUnaffordableTransactionOverHTTP(t *testing.T) {
+	_, url := startNode(t, 1)
+	_, alice, _ := ed25519.GenerateKey(nil)
+	bobPub, _, _ := ed25519.GenerateKey(nil)
+	if status := postMine(t, url, block.NewTransaction(alice, bobPub, 10, 1)); status != http.StatusBadRequest {
+		t.Fatalf("Spending coins alice doesn't have should get status 400, got %d", status)
+	}
+}
+
+func TestRejectsCoinbaseInMineRequest(t *testing.T) {
+	_, url := startNode(t, 1)
+	malloryPub, _, _ := ed25519.GenerateKey(nil)
+	if status := postMine(t, url, block.NewCoinbase(malloryPub)); status != http.StatusBadRequest {
+		t.Fatalf("A coinbase from the caller should get status 400, got %d", status)
+	}
+}
+
+func TestAccountRejectsBadKey(t *testing.T) {
+	_, url := startNode(t, 1)
+	resp, err := http.Get(url + "/account?key=nope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("A malformed key should get status 400, got %d", resp.StatusCode)
 	}
 }
