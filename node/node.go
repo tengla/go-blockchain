@@ -114,12 +114,12 @@ func (n *Node) AddTransaction(t *block.Transaction) error {
 
 // Mine mines a block with every pending transaction onto the chain and
 // sends it to every peer. The block starts with a coinbase if the node has
-// a miner key.
+// a miner key and there is still a reward to pay.
 func (n *Node) Mine(data map[string]string) (*block.Block, error) {
 	n.mu.Lock()
 	var txs []*block.Transaction
-	if n.miner != nil {
-		txs = append(txs, block.NewCoinbase(n.miner))
+	if idx := n.chain.Tip().Idx + 1; n.miner != nil && block.Reward(idx) > 0 {
+		txs = append(txs, block.NewCoinbase(n.miner, idx))
 	}
 	b := block.NewBlock(data, append(txs, n.pending...)...)
 	err := n.chain.AddBlock(b)

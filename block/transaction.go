@@ -6,8 +6,23 @@ import (
 	"fmt"
 )
 
-// Reward is what the miner of a block is paid through its coinbase
-const Reward = 50
+// The miner of each of the first HalvingInterval blocks is paid
+// InitialReward through the block's coinbase. The reward then halves every
+// HalvingInterval blocks until it rounds down to 0, so no more than
+// HalvingInterval * (50 + 25 + 12 + 6 + 3 + 1) = 9700 coins are ever made.
+const (
+	InitialReward   = 50
+	HalvingInterval = 100
+)
+
+// Reward is what the miner of block idx is paid. Counting starts at block 1,
+// since the genesis block has no coinbase.
+func Reward(idx int) int {
+	if idx < 1 {
+		return 0
+	}
+	return InitialReward >> uint((idx-1)/HalvingInterval)
+}
 
 // Transaction moves Amount from the owner of From to To. Nonce counts the
 // sender's transactions, starting at 1, so a signed transaction can't be
@@ -33,9 +48,9 @@ func NewTransaction(from ed25519.PrivateKey, to ed25519.PublicKey, amount, nonce
 	return t
 }
 
-// NewCoinbase creates the transaction that pays the miner of a block
-func NewCoinbase(to ed25519.PublicKey) *Transaction {
-	return &Transaction{To: to, Amount: Reward}
+// NewCoinbase creates the transaction that pays the miner of block idx
+func NewCoinbase(to ed25519.PublicKey, idx int) *Transaction {
+	return &Transaction{To: to, Amount: Reward(idx)}
 }
 
 // IsCoinbase reports whether the transaction creates coins instead of
@@ -49,15 +64,16 @@ func (t *Transaction) signingPayload() []byte {
 	return []byte(fmt.Sprintf("%x|%x|%d|%d", t.From, t.To, t.Amount, t.Nonce))
 }
 
-// Verify checks that the transaction was signed by the owner of From, or
-// for a coinbase that it pays exactly the reward. Whether the sender can
-// afford it depends on the chain, which checks it when adding the block.
+// Verify checks that the transaction was signed by the owner of From. A
+// coinbase has no signature, and the block checks that it pays exactly the
+// reward. Whether the sender can afford it depends on the chain, which
+// checks it when adding the block.
 func (t *Transaction) Verify() bool {
 	if len(t.To) != ed25519.PublicKeySize {
 		return false
 	}
 	if t.IsCoinbase() {
-		return t.Amount == Reward && t.Nonce == 0 && len(t.Signature) == 0
+		return t.Amount > 0 && t.Nonce == 0 && len(t.Signature) == 0
 	}
 	// ed25519.Verify panics on a key of the wrong length
 	if len(t.From) != ed25519.PublicKeySize {

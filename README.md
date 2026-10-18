@@ -12,7 +12,8 @@ make
 Run a small network of nodes, each in its own terminal. Peering should go both
 ways, so a node that falls behind can download the longer chain. A node started
 with `-miner` mines a block every `-interval` (10s by default) and is paid a
-reward of 50 for each one. The others only keep a copy of the chain:
+reward for each one. The reward starts at 50 and halves every 100 blocks, so
+no more than 9700 coins are ever made. The others only keep a copy of the chain:
 
 ```
 ./dist/tx -keygen alice

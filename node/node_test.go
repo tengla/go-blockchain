@@ -204,8 +204,8 @@ func TestMinerIsPaidAndCanSpend(t *testing.T) {
 	if _, err := a.Mine(nil); err != nil {
 		t.Fatal(err)
 	}
-	if balance, _, _ := getAccount(t, bURL, minerPub); balance != block.Reward {
-		t.Fatalf("Miner should have earned %d, has %d", block.Reward, balance)
+	if balance, _, _ := getAccount(t, bURL, minerPub); balance != block.InitialReward {
+		t.Fatalf("Miner should have earned %d, has %d", block.InitialReward, balance)
 	}
 
 	// sent to b, which passes it on to the miner
@@ -232,8 +232,8 @@ func TestMinerIsPaidAndCanSpend(t *testing.T) {
 		if balance, _, _ := getAccount(t, u, bobPub); balance != 10 {
 			t.Fatalf("Bob should have 10 on %s, has %d", u, balance)
 		}
-		if balance, nonce, _ := getAccount(t, u, minerPub); balance != 2*block.Reward-10 || nonce != 1 {
-			t.Fatalf("Miner should have %d and nonce 1 on %s, has %d and %d", 2*block.Reward-10, u, balance, nonce)
+		if balance, nonce, _ := getAccount(t, u, minerPub); balance != 2*block.InitialReward-10 || nonce != 1 {
+			t.Fatalf("Miner should have %d and nonce 1 on %s, has %d and %d", 2*block.InitialReward-10, u, balance, nonce)
 		}
 	}
 }
@@ -290,7 +290,7 @@ func TestPoolDropsTransactionsMinedElsewhere(t *testing.T) {
 func TestRejectsCoinbaseTransaction(t *testing.T) {
 	_, url := startNode(t, 1)
 	malloryPub, _, _ := ed25519.GenerateKey(nil)
-	if status := postTransaction(t, url, block.NewCoinbase(malloryPub)); status != http.StatusBadRequest {
+	if status := postTransaction(t, url, block.NewCoinbase(malloryPub, 1)); status != http.StatusBadRequest {
 		t.Fatalf("A coinbase from the caller should get status 400, got %d", status)
 	}
 }
@@ -321,5 +321,29 @@ func TestMineEvery(t *testing.T) {
 	<-done
 	if len(a.Blocks()) < 3 {
 		t.Fatalf("Miner should have mined several blocks, has %d", len(a.Blocks())-1)
+	}
+}
+
+func TestMinerStopsBeingPaidWhenRewardRunsOut(t *testing.T) {
+	minerPub, _, _ := ed25519.GenerateKey(nil)
+	a, _ := startMiner(t, 1, minerPub)
+	for i := 0; block.Reward(len(a.Blocks())) > 0; i++ {
+		if i > 64*block.HalvingInterval {
+			t.Fatal("The reward should run out")
+		}
+		if _, err := a.Mine(nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	balance, _, _ := a.Account(minerPub)
+	b, err := a.Mine(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b.Transactions) != 0 {
+		t.Fatal("Once the reward is 0 a block should have no coinbase")
+	}
+	if after, _, _ := a.Account(minerPub); balance != 9700 || after != balance {
+		t.Fatalf("Miner should have all 9700 coins and no more, has %d then %d", balance, after)
 	}
 }

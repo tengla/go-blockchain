@@ -117,7 +117,7 @@ func (c *Chain) Nonce(key ed25519.PublicKey) int {
 // CheckTransactions reports whether txs, in this order, could go in the next
 // block: each one is valid and every sender can afford it
 func (c *Chain) CheckTransactions(txs []*Transaction) error {
-	if err := verifyTransactions(txs); err != nil {
+	if err := verifyTransactions(c.Tip().Idx+1, txs); err != nil {
 		return err
 	}
 	_, err := c.ledger.apply(txs)
@@ -127,7 +127,7 @@ func (c *Chain) CheckTransactions(txs []*Transaction) error {
 // AddBlock mines b onto the end of the chain, unless it has an invalid
 // transaction or one the sender can't afford
 func (c *Chain) AddBlock(b *Block) error {
-	if err := verifyTransactions(b.Transactions); err != nil {
+	if err := verifyTransactions(c.Tip().Idx+1, b.Transactions); err != nil {
 		return err
 	}
 	ledger, err := c.ledger.apply(b.Transactions)

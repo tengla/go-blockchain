@@ -41,7 +41,7 @@ func TestHashSurvivesJSONRoundTrip(t *testing.T) {
 	c := CreateChain(1)
 	if err := c.AddBlock(NewBlock(map[string]string{
 		"Name": "Block 1",
-	}, NewCoinbase(alicePub), NewTransaction(alice, bobPub, 10, 1))); err != nil {
+	}, NewCoinbase(alicePub, 1), NewTransaction(alice, bobPub, 10, 1))); err != nil {
 		t.Fatal(err)
 	}
 	var b Block

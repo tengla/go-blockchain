@@ -63,19 +63,19 @@ func TestTransactionWithNonPositiveAmountFailsVerify(t *testing.T) {
 
 func TestCoinbaseVerify(t *testing.T) {
 	alicePub, alice := newKey(t)
-	if !NewCoinbase(alicePub).Verify() {
+	if !NewCoinbase(alicePub, 1).Verify() {
 		t.Fatal("Coinbase should verify")
 	}
 
-	tooMuch := NewCoinbase(alicePub)
-	tooMuch.Amount = Reward + 1
-	signed := NewCoinbase(alicePub)
+	nothing := NewCoinbase(alicePub, 1)
+	nothing.Amount = 0
+	signed := NewCoinbase(alicePub, 1)
 	signed.Signature = ed25519.Sign(alice, signed.signingPayload())
-	noOne := NewCoinbase(nil)
+	noOne := NewCoinbase(nil, 1)
 	for name, tx := range map[string]*Transaction{
-		"more than the reward": tooMuch,
-		"a signature":          signed,
-		"no recipient":         noOne,
+		"no amount":    nothing,
+		"a signature":  signed,
+		"no recipient": noOne,
 	} {
 		if tx.Verify() {
 			t.Fatalf("Coinbase with %s should not verify", name)

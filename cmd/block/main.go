@@ -35,7 +35,7 @@ func main() {
 	// alice mines the first block, so she has coins to send
 	add(block.NewBlock(map[string]string{
 		"Name": "I am the first",
-	}, block.NewCoinbase(alicePub)))
+	}, block.NewCoinbase(alicePub, 1)))
 
 	add(block.NewBlock(map[string]string{
 		"Name": "I am the second",
