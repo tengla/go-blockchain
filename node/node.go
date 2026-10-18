@@ -2,6 +2,7 @@ package node
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
@@ -19,12 +20,14 @@ import (
 // client is shared by every node in the process, for talking to peers
 var client = &http.Client{Timeout: 10 * time.Second}
 
-// Node keeps a copy of the chain and shares new blocks with its peers
+// Node keeps a copy of the chain and shares new blocks and transactions
+// with its peers. Transactions wait in a pool until a block includes them.
 type Node struct {
-	mu    sync.Mutex
-	chain *block.Chain
-	peers []string
-	miner ed25519.PublicKey
+	mu      sync.Mutex
+	chain   *block.Chain
+	peers   []string
+	miner   ed25519.PublicKey
+	pending []*block.Transaction
 }
 
 // New creates a node with a fresh chain. The reward for each block it mines
@@ -60,34 +63,93 @@ func (n *Node) Blocks() []*block.Block {
 	return n.chain.Blocks()
 }
 
-// Account returns what the owner of key has to spend, and the nonce of the
-// last transaction they sent
-func (n *Node) Account(key ed25519.PublicKey) (balance, nonce int) {
+// Account returns what the owner of key has to spend in mined blocks, the
+// nonce of the last transaction they had mined, and how many of theirs are
+// waiting in the pool. Their next transaction needs nonce + pending + 1.
+func (n *Node) Account(key ed25519.PublicKey) (balance, nonce, pending int) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return n.chain.Balance(key), n.chain.Nonce(key)
-}
-
-// Mine mines a new block onto the chain and sends it to every peer
-func (n *Node) Mine(data map[string]string, txs ...*block.Transaction) (*block.Block, error) {
-	for _, t := range txs {
-		// otherwise anyone could post a coinbase that pays themselves
-		if t.IsCoinbase() {
-			return nil, errors.New("the node adds the coinbase itself")
+	for _, t := range n.pending {
+		if bytes.Equal(t.From, key) {
+			pending++
 		}
 	}
-	if n.miner != nil {
-		txs = append([]*block.Transaction{block.NewCoinbase(n.miner)}, txs...)
+	return n.chain.Balance(key), n.chain.Nonce(key), pending
+}
+
+// Pending returns the transactions waiting to be mined, in order
+func (n *Node) Pending() []*block.Transaction {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]*block.Transaction{}, n.pending...)
+}
+
+// AddTransaction puts a transaction in the pool and sends it to every peer.
+// It must fit after the ones already waiting, so a sender can't spend the
+// same coins twice before a block is mined.
+func (n *Node) AddTransaction(t *block.Transaction) error {
+	// otherwise anyone could add a coinbase that pays themselves
+	if t.IsCoinbase() {
+		return errors.New("only a miner can add a coinbase")
 	}
 	n.mu.Lock()
-	b := block.NewBlock(data, txs...)
+	for _, p := range n.pending {
+		if bytes.Equal(p.Hash(), t.Hash()) {
+			// already have it, which also stops it going round the peers forever
+			n.mu.Unlock()
+			return nil
+		}
+	}
+	err := n.chain.CheckTransactions(append(n.pending, t))
+	if err == nil {
+		n.pending = append(n.pending, t)
+	}
+	n.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	n.broadcast("/transactions", t)
+	return nil
+}
+
+// Mine mines a block with every pending transaction onto the chain and
+// sends it to every peer. The block starts with a coinbase if the node has
+// a miner key.
+func (n *Node) Mine(data map[string]string) (*block.Block, error) {
+	n.mu.Lock()
+	var txs []*block.Transaction
+	if n.miner != nil {
+		txs = append(txs, block.NewCoinbase(n.miner))
+	}
+	b := block.NewBlock(data, append(txs, n.pending...)...)
 	err := n.chain.AddBlock(b)
+	if err == nil {
+		n.pending = nil
+	}
 	n.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	n.broadcast(b)
+	n.broadcast("/blocks", b)
 	return b, nil
+}
+
+// MineEvery mines a block every interval until ctx is done. Blocks are
+// mined even with no pending transactions, since that is how a miner earns
+// its first coins.
+func (n *Node) MineEvery(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := n.Mine(nil); err != nil {
+				log.Printf("mine: %v", err)
+			}
+		}
+	}
 }
 
 // Receive handles a block from a peer. A block that extends the chain is
@@ -101,11 +163,14 @@ func (n *Node) Receive(b *block.Block) error {
 	}
 	tip := n.chain.Tip()
 	err := n.chain.AppendBlock(b)
+	if err == nil {
+		n.prune()
+	}
 	n.mu.Unlock()
 
 	switch {
 	case err == nil:
-		n.broadcast(b)
+		n.broadcast("/blocks", b)
 	case errors.Is(err, block.ErrNotOnTip):
 		if b.Idx > tip.Idx {
 			n.Sync()
@@ -135,6 +200,7 @@ func (n *Node) Sync() {
 		replaced := err == nil && candidate.Len() > n.chain.Len()
 		if replaced {
 			n.chain = candidate
+			n.prune()
 		}
 		n.mu.Unlock()
 
@@ -143,7 +209,7 @@ func (n *Node) Sync() {
 		}
 		if replaced {
 			// let peers that are behind us catch up too
-			n.broadcast(candidate.Tip())
+			n.broadcast("/blocks", candidate.Tip())
 		}
 	}
 }
@@ -152,8 +218,9 @@ func (n *Node) Sync() {
 //
 //	GET  /blocks            the node's chain
 //	POST /blocks            receive a block from a peer
-//	GET  /account?key=...   a public key's {"Balance": 50, "Nonce": 1}
-//	POST /mine              mine a block: {"Data": {...}, "Transactions": [...]}
+//	GET  /transactions      the transactions waiting to be mined
+//	POST /transactions      add a transaction to the pool: {"From": ..., "To": ..., ...}
+//	GET  /account?key=...   a public key's {"Balance": 50, "Nonce": 1, "Pending": 0}
 //	POST /peers             add a peer and sync from it: {"URL": "http://..."}
 func (n *Node) App() *fiber.App {
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
@@ -178,24 +245,24 @@ func (n *Node) App() *fiber.App {
 		if err != nil {
 			return c.Status(fiber.StatusBadRequest).SendString("key: " + err.Error())
 		}
-		var resp struct{ Balance, Nonce int }
-		resp.Balance, resp.Nonce = n.Account(key)
+		var resp struct{ Balance, Nonce, Pending int }
+		resp.Balance, resp.Nonce, resp.Pending = n.Account(key)
 		return sendJSON(c, resp)
 	})
 
-	app.Post("/mine", func(c *fiber.Ctx) error {
-		var req struct {
-			Data         map[string]string
-			Transactions []*block.Transaction
-		}
-		if err := json.Unmarshal(c.Body(), &req); err != nil {
+	app.Get("/transactions", func(c *fiber.Ctx) error {
+		return sendJSON(c, n.Pending())
+	})
+
+	app.Post("/transactions", func(c *fiber.Ctx) error {
+		var t block.Transaction
+		if err := json.Unmarshal(c.Body(), &t); err != nil {
 			return c.Status(fiber.StatusBadRequest).SendString(err.Error())
 		}
-		b, err := n.Mine(req.Data, req.Transactions...)
-		if err != nil {
+		if err := n.AddTransaction(&t); err != nil {
 			return c.Status(fiber.StatusBadRequest).SendString(err.Error())
 		}
-		return sendJSON(c, b)
+		return c.SendStatus(fiber.StatusOK)
 	})
 
 	app.Post("/peers", func(c *fiber.Ctx) error {
@@ -217,15 +284,28 @@ func (n *Node) peerList() []string {
 	return append([]string(nil), n.peers...)
 }
 
-// broadcast sends a block to every peer. A peer that is down is skipped.
-func (n *Node) broadcast(b *block.Block) {
-	body, err := json.Marshal(b)
+// prune drops pending transactions that no longer fit on the chain, such as
+// ones a new block already includes. The caller holds n.mu.
+func (n *Node) prune() {
+	var keep []*block.Transaction
+	for _, t := range n.pending {
+		if n.chain.CheckTransactions(append(keep, t)) == nil {
+			keep = append(keep, t)
+		}
+	}
+	n.pending = keep
+}
+
+// broadcast posts a block or transaction to path on every peer. A peer that
+// is down is skipped.
+func (n *Node) broadcast(path string, v interface{}) {
+	body, err := json.Marshal(v)
 	if err != nil {
 		log.Printf("broadcast: %v", err)
 		return
 	}
 	for _, p := range n.peerList() {
-		resp, err := client.Post(p+"/blocks", "application/json", bytes.NewReader(body))
+		resp, err := client.Post(p+path, "application/json", bytes.NewReader(body))
 		if err != nil {
 			log.Printf("broadcast to %s: %v", p, err)
 			continue

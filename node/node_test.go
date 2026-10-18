@@ -2,12 +2,14 @@ package node
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"net"
 	"net/http"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/tengla/fibro/block"
 	"github.com/tengla/fibro/wallet"
@@ -151,18 +153,8 @@ func TestRejectsInvalidTransactionOverHTTP(t *testing.T) {
 	bobPub, _, _ := ed25519.GenerateKey(nil)
 	tx := block.NewTransaction(alice, bobPub, 10, 1)
 	tx.Amount = 1000
-	body, _ := json.Marshal(map[string]interface{}{
-		"Data":         map[string]string{"Name": "Block 1"},
-		"Transactions": []*block.Transaction{tx},
-	})
-
-	resp, err := http.Post(url+"/mine", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("Mining an invalid transaction should get status 400, got %d", resp.StatusCode)
+	if status := postTransaction(t, url, tx); status != http.StatusBadRequest {
+		t.Fatalf("An invalid transaction should get status 400, got %d", status)
 	}
 }
 
@@ -179,9 +171,9 @@ func TestIgnoresChainWithDifferentDifficulty(t *testing.T) {
 	}
 }
 
-func postMine(t *testing.T, nodeURL string, txs ...*block.Transaction) int {
-	body, _ := json.Marshal(map[string]interface{}{"Transactions": txs})
-	resp, err := http.Post(nodeURL+"/mine", "application/json", bytes.NewReader(body))
+func postTransaction(t *testing.T, nodeURL string, tx *block.Transaction) int {
+	body, _ := json.Marshal(tx)
+	resp, err := http.Post(nodeURL+"/transactions", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,17 +181,17 @@ func postMine(t *testing.T, nodeURL string, txs ...*block.Transaction) int {
 	return resp.StatusCode
 }
 
-func getAccount(t *testing.T, nodeURL string, key ed25519.PublicKey) (balance, nonce int) {
+func getAccount(t *testing.T, nodeURL string, key ed25519.PublicKey) (balance, nonce, pending int) {
 	resp, err := http.Get(nodeURL + "/account?key=" + url.QueryEscape(wallet.Encode(key)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	var account struct{ Balance, Nonce int }
+	var account struct{ Balance, Nonce, Pending int }
 	if err := json.NewDecoder(resp.Body).Decode(&account); err != nil {
 		t.Fatal(err)
 	}
-	return account.Balance, account.Nonce
+	return account.Balance, account.Nonce, account.Pending
 }
 
 func TestMinerIsPaidAndCanSpend(t *testing.T) {
@@ -209,40 +201,96 @@ func TestMinerIsPaidAndCanSpend(t *testing.T) {
 	b, bURL := startNode(t, 1)
 	connect(a, aURL, b, bURL)
 
-	if status := postMine(t, aURL); status != http.StatusOK {
-		t.Fatalf("Mining should succeed, got status %d", status)
+	if _, err := a.Mine(nil); err != nil {
+		t.Fatal(err)
 	}
-	if balance, _ := getAccount(t, aURL, minerPub); balance != block.Reward {
+	if balance, _, _ := getAccount(t, bURL, minerPub); balance != block.Reward {
 		t.Fatalf("Miner should have earned %d, has %d", block.Reward, balance)
 	}
 
-	// the second block pays another reward, so the miner has 2 * Reward - 10
-	if status := postMine(t, aURL, block.NewTransaction(miner, bobPub, 10, 1)); status != http.StatusOK {
+	// sent to b, which passes it on to the miner
+	if status := postTransaction(t, bURL, block.NewTransaction(miner, bobPub, 10, 1)); status != http.StatusOK {
 		t.Fatalf("Miner should be able to spend the reward, got status %d", status)
 	}
+	if len(a.Pending()) != 1 {
+		t.Fatal("The transaction should have reached the miner's pool")
+	}
+	if balance, _, pending := getAccount(t, aURL, bobPub); balance != 0 || pending != 0 {
+		t.Fatal("Bob should get nothing until the transaction is mined")
+	}
+
+	// the second block pays another reward, so the miner has 2 * Reward - 10
+	if _, err := a.Mine(nil); err != nil {
+		t.Fatal(err)
+	}
+	for name, n := range map[string]*Node{"a": a, "b": b} {
+		if len(n.Pending()) != 0 {
+			t.Fatalf("Node %s should have dropped the mined transaction from its pool", name)
+		}
+	}
 	for _, u := range []string{aURL, bURL} {
-		if balance, _ := getAccount(t, u, bobPub); balance != 10 {
+		if balance, _, _ := getAccount(t, u, bobPub); balance != 10 {
 			t.Fatalf("Bob should have 10 on %s, has %d", u, balance)
 		}
-		if balance, nonce := getAccount(t, u, minerPub); balance != 2*block.Reward-10 || nonce != 1 {
+		if balance, nonce, _ := getAccount(t, u, minerPub); balance != 2*block.Reward-10 || nonce != 1 {
 			t.Fatalf("Miner should have %d and nonce 1 on %s, has %d and %d", 2*block.Reward-10, u, balance, nonce)
 		}
 	}
 }
 
-func TestRejectsUnaffordableTransactionOverHTTP(t *testing.T) {
-	_, url := startNode(t, 1)
-	_, alice, _ := ed25519.GenerateKey(nil)
+func TestPoolCountsPendingTransactions(t *testing.T) {
+	alicePub, alice, _ := ed25519.GenerateKey(nil)
 	bobPub, _, _ := ed25519.GenerateKey(nil)
-	if status := postMine(t, url, block.NewTransaction(alice, bobPub, 10, 1)); status != http.StatusBadRequest {
-		t.Fatalf("Spending coins alice doesn't have should get status 400, got %d", status)
+	a, url := startMiner(t, 1, alicePub)
+	a.Mine(nil)
+
+	for nonce := 1; nonce <= 2; nonce++ {
+		if status := postTransaction(t, url, block.NewTransaction(alice, bobPub, 20, nonce)); status != http.StatusOK {
+			t.Fatalf("Transaction %d should be accepted, got status %d", nonce, status)
+		}
+	}
+	if _, nonce, pending := getAccount(t, url, alicePub); nonce != 0 || pending != 2 {
+		t.Fatalf("Alice should have nonce 0 and 2 pending, has %d and %d", nonce, pending)
+	}
+	// alice has 50 and 40 of it is already pending
+	if status := postTransaction(t, url, block.NewTransaction(alice, bobPub, 20, 3)); status != http.StatusBadRequest {
+		t.Fatalf("Spending coins that are already pending should get status 400, got %d", status)
+	}
+	if status := postTransaction(t, url, block.NewTransaction(alice, bobPub, 5, 2)); status != http.StatusBadRequest {
+		t.Fatalf("A nonce already pending should get status 400, got %d", status)
+	}
+
+	b, _ := a.Mine(nil)
+	if len(b.Transactions) != 3 {
+		t.Fatalf("Block should have the coinbase and both transactions, has %d", len(b.Transactions))
 	}
 }
 
-func TestRejectsCoinbaseInMineRequest(t *testing.T) {
+func TestPoolDropsTransactionsMinedElsewhere(t *testing.T) {
+	alicePub, alice, _ := ed25519.GenerateKey(nil)
+	bobPub, _, _ := ed25519.GenerateKey(nil)
+	a, aURL := startMiner(t, 1, alicePub)
+	b, bURL := startNode(t, 1)
+	a.Mine(nil)
+	connect(a, aURL, b, bURL)
+	b.Sync()
+
+	if err := a.AddTransaction(block.NewTransaction(alice, bobPub, 10, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.Pending()) != 1 {
+		t.Fatal("Node b should have the transaction in its pool")
+	}
+	a.Mine(nil)
+	if len(b.Pending()) != 0 {
+		t.Fatal("Node b should drop a transaction once a peer's block includes it")
+	}
+}
+
+func TestRejectsCoinbaseTransaction(t *testing.T) {
 	_, url := startNode(t, 1)
 	malloryPub, _, _ := ed25519.GenerateKey(nil)
-	if status := postMine(t, url, block.NewCoinbase(malloryPub)); status != http.StatusBadRequest {
+	if status := postTransaction(t, url, block.NewCoinbase(malloryPub)); status != http.StatusBadRequest {
 		t.Fatalf("A coinbase from the caller should get status 400, got %d", status)
 	}
 }
@@ -256,5 +304,22 @@ func TestAccountRejectsBadKey(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("A malformed key should get status 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestMineEvery(t *testing.T) {
+	minerPub, _, _ := ed25519.GenerateKey(nil)
+	a, _ := startMiner(t, 1, minerPub)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		a.MineEvery(ctx, 10*time.Millisecond)
+		close(done)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+	if len(a.Blocks()) < 3 {
+		t.Fatalf("Miner should have mined several blocks, has %d", len(a.Blocks())-1)
 	}
 }

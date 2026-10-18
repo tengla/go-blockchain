@@ -20,7 +20,7 @@ var (
 	to     = flag.String("to", "", "The recipient's public key file")
 	amount = flag.Int("amount", 0, "The amount to send")
 	nonce  = flag.Int("nonce", 0, "The transaction's nonce. Without one, the next nonce is fetched from -node")
-	node   = flag.String("node", "http://localhost:3001", "The node to fetch the nonce from")
+	node   = flag.String("node", "http://localhost:3001", "The node to fetch the next nonce from")
 )
 
 func main() {
@@ -54,18 +54,15 @@ func main() {
 		}
 	}
 
-	// The output is a body for POST /mine
-	req := struct {
-		Transactions []*block.Transaction
-	}{
-		Transactions: []*block.Transaction{block.NewTransaction(priv, pub, *amount, *nonce)},
-	}
-	if err := json.NewEncoder(os.Stdout).Encode(req); err != nil {
+	// The output is a body for POST /transactions
+	tx := block.NewTransaction(priv, pub, *amount, *nonce)
+	if err := json.NewEncoder(os.Stdout).Encode(tx); err != nil {
 		log.Fatal(err)
 	}
 }
 
-// nextNonce asks the node for the sender's last nonce
+// nextNonce asks the node for the sender's last nonce, counting their
+// transactions that are waiting to be mined
 func nextNonce(key ed25519.PublicKey) (int, error) {
 	resp, err := http.Get(*node + "/account?key=" + url.QueryEscape(wallet.Encode(key)))
 	if err != nil {
@@ -75,9 +72,9 @@ func nextNonce(key ed25519.PublicKey) (int, error) {
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("%s: status %d", *node, resp.StatusCode)
 	}
-	var account struct{ Nonce int }
+	var account struct{ Nonce, Pending int }
 	if err := json.NewDecoder(resp.Body).Decode(&account); err != nil {
 		return 0, err
 	}
-	return account.Nonce + 1, nil
+	return account.Nonce + account.Pending + 1, nil
 }
