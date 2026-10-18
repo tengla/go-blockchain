@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+
+version: '3'
+
+pre_def_task: &pre_def_task
+  sh: true
+
+tasks:
+  lint:
+    silent: true
+    cmd: echo "linting ..."
+  build:
+    cmds:
+    - go build -o dist/block-chain cmd/block/main.go
+    - go build -o dist/node cmd/server/main.go
+  01:run: ./dist/node -addr :3001
+  02:run: ./dist/node -addr :3002 -peers http://localhost:3001
+  deploy:
+    if: '[ "$CI" = "true" ]'
+    preconditions: [*pre_def_task]
+    deps: [lint]
+    silent: true
+    vars:
+      TEMPDIR:
+        sh: mktemp -d -t foo
+    cmds:
+      - defer: rmdir "{{.TEMPDIR}}"
+      - echo "CI=$CI {{.TEMPDIR}}"
