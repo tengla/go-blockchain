@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -20,17 +21,18 @@ type Block struct {
 }
 
 func (b *Block) MineBlock(difficulty int) {
-	s := ""
-	for i := 0; i < difficulty; i++ {
-		s = s + "0"
-	}
 	for {
 		b.Nonce += 1
 		b.Hash = b.GenerateHash()
-		if b.Hash[0:difficulty] == s {
+		if b.MeetsDifficulty(difficulty) {
 			break
 		}
 	}
+}
+
+// MeetsDifficulty reports whether the hash has the required leading zeros
+func (b *Block) MeetsDifficulty(difficulty int) bool {
+	return strings.HasPrefix(b.Hash, strings.Repeat("0", difficulty))
 }
 
 // NewBlock
@@ -46,8 +48,11 @@ func NewBlock(data map[string]string) *Block {
 // GenerateHash
 func (b *Block) GenerateHash() string {
 	sha := sha256.New()
-	str := fmt.Sprintf("%d%d%s%s%s",
-		b.Nonce, b.Idx, b.PreviousHash, b.Created, b.DataToJSON())
+	// Created is hashed as Unix nanoseconds, since its string form includes
+	// the monotonic clock reading, which is lost when the block is serialized.
+	// Fields are separated so different inputs can't produce the same string.
+	str := fmt.Sprintf("%d|%d|%s|%d|%s",
+		b.Nonce, b.Idx, b.PreviousHash, b.Created.UnixNano(), b.DataToJSON())
 	_, err := sha.Write([]byte(str))
 	if err != nil {
 		log.Fatal(err)
@@ -55,8 +60,11 @@ func (b *Block) GenerateHash() string {
 	return fmt.Sprintf("%x", sha.Sum(nil))
 }
 
-func (b *Block) Verify() bool {
+func (b *Block) Verify(difficulty int) bool {
 	if b.Hash != b.GenerateHash() {
+		return false
+	}
+	if !b.MeetsDifficulty(difficulty) {
 		return false
 	}
 	if b.Next == nil {

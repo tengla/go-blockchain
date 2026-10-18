@@ -53,3 +53,25 @@ func TestShouldNotBeAbleToTamperWithBlock(t *testing.T) {
 		t.Fatal("Chain should not be valid, because somebody tampered with it.")
 	}
 }
+
+func TestShouldNotBeAbleToTamperAndRehash(t *testing.T) {
+	c := CreateChain(3)
+	c.AddBlock(NewBlock(map[string]string{
+		"Name": "Block 1",
+	}))
+	c.AddBlock(NewBlock(map[string]string{
+		"Name": "Block 2",
+	}))
+	// tamper, then fix up the hashes without mining
+	b := c.Genesis.Next
+	b.Data["Name"] = "I am now trying to screw you over"
+	for cur := b; cur != nil; cur = cur.Next {
+		cur.Hash = cur.GenerateHash()
+		if cur.Next != nil {
+			cur.Next.PreviousHash = cur.Hash
+		}
+	}
+	if c.Validate() == nil {
+		t.Fatal("Chain should not be valid, because the rehashed blocks were not mined.")
+	}
+}

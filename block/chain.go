@@ -28,7 +28,7 @@ func CreateChain(difficulty int) *Chain {
 		"Name": "Genesis Block",
 	})
 	b.PreviousHash = "0000"
-	b.Hash = b.GenerateHash()
+	b.MineBlock(difficulty)
 	chain.Genesis = b
 	return chain
 }
@@ -51,7 +51,7 @@ func (c *Chain) AddBlock(b *Block) {
 func (c *Chain) Validate() *Block {
 	var foundInvalid *Block = nil
 	c.EveryBlock(func(b *Block) {
-		if !b.Verify() {
+		if !b.Verify(c.Difficulty) {
 			foundInvalid = b
 		}
 	})

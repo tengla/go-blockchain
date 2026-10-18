@@ -1,6 +1,7 @@
 package block
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -31,5 +32,19 @@ func TestMineBlock(t *testing.T) {
 	g.Hash = g.GenerateHash()
 	if g.Hash != g.GenerateHash() {
 		t.Fatal("Hash is not deterministic.")
+	}
+}
+
+func TestHashSurvivesJSONRoundTrip(t *testing.T) {
+	c := CreateChain(1)
+	c.AddBlock(NewBlock(map[string]string{
+		"Name": "Block 1",
+	}))
+	var b Block
+	if err := json.Unmarshal([]byte(c.Genesis.Next.ToJSON()), &b); err != nil {
+		t.Fatal(err)
+	}
+	if b.Hash != b.GenerateHash() {
+		t.Fatal("Hash changed after a JSON round trip.")
 	}
 }
