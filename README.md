@@ -34,6 +34,15 @@ curl localhost:3003/blocks
 curl localhost:3001/peers
 ```
 
+A node keeps the chain in memory, so it is lost when every node is down. Give
+a node a `-data` file to save its chain and peers in after every change. When
+it starts again, it loads them back and checks every block, so a damaged or
+edited file stops the node instead of being overwritten:
+
+```
+./dist/node -addr :3001 -miner alice.pub -data chain.json
+```
+
 ### Sending coins
 
 A wallet is just a key pair. The chain works out each key's balance from its

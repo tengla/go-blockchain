@@ -29,6 +29,7 @@ type Node struct {
 	peers   []string
 	miner   ed25519.PublicKey
 	pending []*block.Transaction
+	data    string
 }
 
 // New creates a node with a fresh chain. The reward for each block it mines
@@ -47,15 +48,24 @@ func New(difficulty int, miner ed25519.PublicKey, peers ...string) *Node {
 
 // AddPeer
 func (n *Node) AddPeer(url string) {
-	url = strings.TrimSuffix(url, "/")
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	if n.addPeer(url) {
+		n.store()
+	}
+}
+
+// addPeer adds a peer unless the node already has it, and reports whether
+// it did. The caller holds n.mu.
+func (n *Node) addPeer(url string) bool {
+	url = strings.TrimSuffix(url, "/")
 	for _, p := range n.peers {
 		if p == url {
-			return
+			return false
 		}
 	}
 	n.peers = append(n.peers, url)
+	return true
 }
 
 // Peers returns the base URLs of the node's peers
@@ -139,6 +149,7 @@ func (n *Node) Mine(data map[string]string) (*block.Block, error) {
 	err := n.chain.AddBlock(b)
 	if err == nil {
 		n.pending = nil
+		n.store()
 	}
 	n.mu.Unlock()
 	if err != nil {
@@ -179,6 +190,7 @@ func (n *Node) Receive(b *block.Block) error {
 	err := n.chain.AppendBlock(b)
 	if err == nil {
 		n.prune()
+		n.store()
 	}
 	n.mu.Unlock()
 
@@ -215,6 +227,7 @@ func (n *Node) Sync() {
 		if replaced {
 			n.chain = candidate
 			n.prune()
+			n.store()
 		}
 		n.mu.Unlock()
 

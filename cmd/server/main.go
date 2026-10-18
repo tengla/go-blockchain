@@ -20,6 +20,7 @@ var (
 	difficulty = flag.Int("difficulty", 3, "The mining difficulty, which must match the peers'")
 	miner      = flag.String("miner", "", "Mine blocks and pay the reward to this public key file. Without one, the node doesn't mine")
 	interval   = flag.Duration("interval", 10*time.Second, "How often a miner mines a block")
+	data       = flag.String("data", "", "A file to save the chain and peers in, and load them from when the node starts")
 )
 
 func main() {
@@ -42,6 +43,13 @@ func main() {
 	}
 
 	n := node.New(*difficulty, minerKey, peerList...)
+	if *data != "" {
+		// A file that fails to load stops the node, instead of being
+		// overwritten by a fresh chain
+		if err := n.Persist(*data); err != nil {
+			log.Fatal(err)
+		}
+	}
 	n.Sync()
 	if minerKey != nil {
 		go n.MineEvery(context.Background(), *interval)
@@ -59,7 +67,7 @@ func main() {
 	// Their requests wait in the listen queue until the app starts serving.
 	go n.Announce(url)
 
-	log.Printf("listening on %s as %s with %d peers", *addr, url, len(peerList))
+	log.Printf("listening on %s as %s with %d blocks and %d peers", *addr, url, len(n.Blocks()), len(n.Peers()))
 	log.Fatal(n.App().Listener(ln))
 }
 
