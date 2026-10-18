@@ -1,6 +1,7 @@
 package block
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -33,8 +34,13 @@ func CreateChain(difficulty int) *Chain {
 	return chain
 }
 
-// AddBlock
-func (c *Chain) AddBlock(b *Block) {
+// AddBlock mines b onto the end of the chain, unless it has an invalid transaction
+func (c *Chain) AddBlock(b *Block) error {
+	for _, t := range b.Transactions {
+		if !t.Verify() {
+			return fmt.Errorf("invalid transaction from %x", t.From)
+		}
+	}
 	block := c.Genesis
 	prevHash := block.Hash
 	for block.Next != nil {
@@ -45,6 +51,7 @@ func (c *Chain) AddBlock(b *Block) {
 	b.Idx = c.IncrNumberOfBlocks()
 	b.MineBlock(c.Difficulty)
 	block.Next = b
+	return nil
 }
 
 // Validate

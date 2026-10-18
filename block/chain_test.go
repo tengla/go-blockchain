@@ -75,3 +75,33 @@ func TestShouldNotBeAbleToTamperAndRehash(t *testing.T) {
 		t.Fatal("Chain should not be valid, because the rehashed blocks were not mined.")
 	}
 }
+
+func TestAddBlockRejectsInvalidTransaction(t *testing.T) {
+	_, alice := newKey(t)
+	bobPub, _ := newKey(t)
+	tx := NewTransaction(alice, bobPub, 10)
+	tx.Amount = 1000
+	c := CreateChain(1)
+	if c.AddBlock(NewBlock(map[string]string{"Name": "Block 1"}, tx)) == nil {
+		t.Fatal("AddBlock should reject a block with an invalid transaction")
+	}
+	if c.Genesis.Next != nil {
+		t.Fatal("Rejected block should not be added to the chain")
+	}
+}
+
+func TestShouldNotBeAbleToSwapTransaction(t *testing.T) {
+	_, alice := newKey(t)
+	bobPub, _ := newKey(t)
+	malloryPub, mallory := newKey(t)
+	c := CreateChain(1)
+	if err := c.AddBlock(NewBlock(map[string]string{"Name": "Block 1"},
+		NewTransaction(alice, bobPub, 10))); err != nil {
+		t.Fatal(err)
+	}
+	// a validly signed transaction, but not the one that was mined
+	c.Genesis.Next.Transactions[0] = NewTransaction(mallory, malloryPub, 10)
+	if c.Validate() == nil {
+		t.Fatal("Chain should not be valid, because a transaction was swapped out.")
+	}
+}

@@ -13,6 +13,8 @@ import (
 type Block struct {
 	Idx          int
 	Data         map[string]string
+	Transactions []*Transaction
+	MerkleRoot   string
 	Created      time.Time
 	Hash         string
 	PreviousHash string
@@ -21,6 +23,7 @@ type Block struct {
 }
 
 func (b *Block) MineBlock(difficulty int) {
+	b.MerkleRoot = MerkleRoot(b.Transactions)
 	for {
 		b.Nonce += 1
 		b.Hash = b.GenerateHash()
@@ -36,11 +39,12 @@ func (b *Block) MeetsDifficulty(difficulty int) bool {
 }
 
 // NewBlock
-func NewBlock(data map[string]string) *Block {
+func NewBlock(data map[string]string, txs ...*Transaction) *Block {
 	b := &Block{
-		Data:    data,
-		Created: time.Now(),
-		Nonce:   0,
+		Data:         data,
+		Transactions: txs,
+		Created:      time.Now(),
+		Nonce:        0,
 	}
 	return b
 }
@@ -51,8 +55,9 @@ func (b *Block) GenerateHash() string {
 	// Created is hashed as Unix nanoseconds, since its string form includes
 	// the monotonic clock reading, which is lost when the block is serialized.
 	// Fields are separated so different inputs can't produce the same string.
-	str := fmt.Sprintf("%d|%d|%s|%d|%s",
-		b.Nonce, b.Idx, b.PreviousHash, b.Created.UnixNano(), b.DataToJSON())
+	// Transactions are covered through MerkleRoot.
+	str := fmt.Sprintf("%d|%d|%s|%d|%s|%s",
+		b.Nonce, b.Idx, b.PreviousHash, b.Created.UnixNano(), b.MerkleRoot, b.DataToJSON())
 	_, err := sha.Write([]byte(str))
 	if err != nil {
 		log.Fatal(err)
@@ -61,6 +66,14 @@ func (b *Block) GenerateHash() string {
 }
 
 func (b *Block) Verify(difficulty int) bool {
+	for _, t := range b.Transactions {
+		if !t.Verify() {
+			return false
+		}
+	}
+	if b.MerkleRoot != MerkleRoot(b.Transactions) {
+		return false
+	}
 	if b.Hash != b.GenerateHash() {
 		return false
 	}

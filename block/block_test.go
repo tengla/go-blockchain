@@ -36,15 +36,20 @@ func TestMineBlock(t *testing.T) {
 }
 
 func TestHashSurvivesJSONRoundTrip(t *testing.T) {
+	_, alice := newKey(t)
+	bobPub, _ := newKey(t)
 	c := CreateChain(1)
 	c.AddBlock(NewBlock(map[string]string{
 		"Name": "Block 1",
-	}))
+	}, NewTransaction(alice, bobPub, 10)))
 	var b Block
 	if err := json.Unmarshal([]byte(c.Genesis.Next.ToJSON()), &b); err != nil {
 		t.Fatal(err)
 	}
 	if b.Hash != b.GenerateHash() {
 		t.Fatal("Hash changed after a JSON round trip.")
+	}
+	if !b.Verify(c.Difficulty) {
+		t.Fatal("Block does not verify after a JSON round trip.")
 	}
 }

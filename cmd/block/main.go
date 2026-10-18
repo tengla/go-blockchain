@@ -1,8 +1,10 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"flag"
 	"fmt"
+	"log"
 
 	"github.com/tengla/fibro/block"
 )
@@ -13,29 +15,44 @@ func main() {
 
 	flag.Parse()
 
+	alicePub, alice, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	bobPub, bob, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	chain := block.CreateChain(*difficulty)
 
-	chain.AddBlock(block.NewBlock(map[string]string{
+	add := func(b *block.Block) {
+		if err := chain.AddBlock(b); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	add(block.NewBlock(map[string]string{
 		"Name": "I am the first",
 	}))
 
-	chain.AddBlock(block.NewBlock(map[string]string{
+	add(block.NewBlock(map[string]string{
 		"Name": "I am the second",
-	}))
+	}, block.NewTransaction(alice, bobPub, 10)))
 
-	chain.AddBlock(block.NewBlock(map[string]string{
+	add(block.NewBlock(map[string]string{
 		"Name": "I am the third", "Note": "Funny",
-	}))
+	}, block.NewTransaction(bob, alicePub, 3), block.NewTransaction(alice, bobPub, 5)))
 
-	chain.AddBlock(block.NewBlock(map[string]string{
+	add(block.NewBlock(map[string]string{
 		"Name": "I am the fourth",
 	}))
 
-	chain.AddBlock(block.NewBlock(map[string]string{
+	add(block.NewBlock(map[string]string{
 		"Name": "I am the fifth",
 	}))
 
-	chain.AddBlock(block.NewBlock(map[string]string{
+	add(block.NewBlock(map[string]string{
 		"Name": "I am the sixth",
 	}))
 
