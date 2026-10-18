@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,6 +47,7 @@ func New(difficulty int, miner ed25519.PublicKey, peers ...string) *Node {
 
 // AddPeer
 func (n *Node) AddPeer(url string) {
+	url = strings.TrimSuffix(url, "/")
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	for _, p := range n.peers {
@@ -54,6 +56,18 @@ func (n *Node) AddPeer(url string) {
 		}
 	}
 	n.peers = append(n.peers, url)
+}
+
+// Peers returns the base URLs of the node's peers
+func (n *Node) Peers() []string {
+	return append([]string{}, n.peerList()...)
+}
+
+// Announce tells every peer that this node can be reached at self. Peers
+// that started first, and so didn't know about it, then send it their new
+// blocks too.
+func (n *Node) Announce(self string) {
+	n.broadcast("/peers", struct{ URL string }{self})
 }
 
 // Blocks returns the node's current chain, genesis first
@@ -221,6 +235,7 @@ func (n *Node) Sync() {
 //	GET  /transactions      the transactions waiting to be mined
 //	POST /transactions      add a transaction to the pool: {"From": ..., "To": ..., ...}
 //	GET  /account?key=...   a public key's {"Balance": 50, "Nonce": 1, "Pending": 0}
+//	GET  /peers             the node's peers
 //	POST /peers             add a peer and sync from it: {"URL": "http://..."}
 func (n *Node) App() *fiber.App {
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
@@ -265,6 +280,10 @@ func (n *Node) App() *fiber.App {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
+	app.Get("/peers", func(c *fiber.Ctx) error {
+		return sendJSON(c, n.Peers())
+	})
+
 	app.Post("/peers", func(c *fiber.Ctx) error {
 		var req struct{ URL string }
 		if err := json.Unmarshal(c.Body(), &req); err != nil || req.URL == "" {
@@ -296,8 +315,8 @@ func (n *Node) prune() {
 	n.pending = keep
 }
 
-// broadcast posts a block or transaction to path on every peer. A peer that
-// is down is skipped.
+// broadcast posts v to path on every peer, such as a block to /blocks. A
+// peer that is down is skipped.
 func (n *Node) broadcast(path string, v interface{}) {
 	body, err := json.Marshal(v)
 	if err != nil {

@@ -347,3 +347,38 @@ func TestMinerStopsBeingPaidWhenRewardRunsOut(t *testing.T) {
 		t.Fatalf("Miner should have all 9700 coins and no more, has %d then %d", balance, after)
 	}
 }
+
+func TestNodeThatStartedFirstLearnsAboutLaterOnes(t *testing.T) {
+	// a starts alone and mines, then b starts knowing only about a
+	a, aURL := startNode(t, 1)
+	a.Mine(map[string]string{"Name": "a1"})
+	b, bURL := startNode(t, 1)
+	b.AddPeer(aURL)
+	b.Sync()
+	b.Announce(bURL)
+
+	if peers := a.Peers(); len(peers) != 1 || peers[0] != bURL {
+		t.Fatalf("Node a should have b as its peer, has %v", peers)
+	}
+	mined, _ := a.Mine(map[string]string{"Name": "a2"})
+	if len(b.Blocks()) != 3 || tipHash(b) != mined.Hash {
+		t.Fatal("Node b should get the blocks a mines after b announced itself")
+	}
+}
+
+func TestPeersOverHTTP(t *testing.T) {
+	a, aURL := startNode(t, 1)
+	a.AddPeer("http://localhost:3002/")
+	resp, err := http.Get(aURL + "/peers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var peers []string
+	if err := json.NewDecoder(resp.Body).Decode(&peers); err != nil {
+		t.Fatal(err)
+	}
+	if len(peers) != 1 || peers[0] != "http://localhost:3002" {
+		t.Fatalf("Peers should list the peer without its trailing slash, got %v", peers)
+	}
+}

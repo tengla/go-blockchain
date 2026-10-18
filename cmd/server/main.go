@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"flag"
 	"log"
+	"net"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 var (
 	addr       = flag.String("addr", ":3000", "The address to listen on")
+	self       = flag.String("url", "", "The URL peers reach this node at. Defaults to http://localhost and the port in -addr")
 	peers      = flag.String("peers", "", "Comma-separated peer URLs, such as http://localhost:3001")
 	difficulty = flag.Int("difficulty", 3, "The mining difficulty, which must match the peers'")
 	miner      = flag.String("miner", "", "Mine blocks and pay the reward to this public key file. Without one, the node doesn't mine")
@@ -45,6 +47,32 @@ func main() {
 		go n.MineEvery(context.Background(), *interval)
 	}
 
-	log.Printf("listening on %s with %d peers", *addr, len(peerList))
-	log.Fatal(n.App().Listen(*addr))
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	url, err := selfURL()
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Peers sync from us when we announce, so we must already be listening.
+	// Their requests wait in the listen queue until the app starts serving.
+	go n.Announce(url)
+
+	log.Printf("listening on %s as %s with %d peers", *addr, url, len(peerList))
+	log.Fatal(n.App().Listener(ln))
+}
+
+func selfURL() (string, error) {
+	if *self != "" {
+		return strings.TrimSuffix(*self, "/"), nil
+	}
+	host, port, err := net.SplitHostPort(*addr)
+	if err != nil {
+		return "", err
+	}
+	if host == "" {
+		host = "localhost"
+	}
+	return "http://" + net.JoinHostPort(host, port), nil
 }

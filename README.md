@@ -9,23 +9,29 @@ make
 ./dist/block-chain -difficulty 3
 ```
 
-Run a small network of nodes, each in its own terminal. Peering should go both
-ways, so a node that falls behind can download the longer chain. A node started
-with `-miner` mines a block every `-interval` (10s by default) and is paid a
-reward for each one. The reward starts at 50 and halves every 100 blocks, so
-no more than 9700 coins are ever made. The others only keep a copy of the chain:
+Run a small network of nodes, each in its own terminal. A node only needs to
+know one node that is already running: when it starts, it announces itself to
+its `-peers`, which add it as a peer too. Peers reach it at `-url`, which
+defaults to `http://localhost` and the port in `-addr`.
+
+A node started with `-miner` mines a block every `-interval` (10s by default)
+and is paid a reward for each one. The reward starts at 50 and halves every 100
+blocks, so no more than 9700 coins are ever made. The others only keep a copy
+of the chain:
 
 ```
 ./dist/tx -keygen alice
-./dist/node -addr :3001 -peers http://localhost:3002 -miner alice.pub
-./dist/node -addr :3002 -peers http://localhost:3001,http://localhost:3003
+./dist/node -addr :3001 -miner alice.pub
+./dist/node -addr :3002 -peers http://localhost:3001
 ./dist/node -addr :3003 -peers http://localhost:3002
 ```
 
-Blocks mined on the first node show up on the others:
+Blocks mined on the first node show up on the others, and each node lists its
+peers:
 
 ```
 curl localhost:3003/blocks
+curl localhost:3001/peers
 ```
 
 ### Sending coins
