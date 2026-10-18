@@ -1,6 +1,7 @@
 package block
 
 import (
+	"encoding/json"
 	"log"
 	"testing"
 )
@@ -103,5 +104,75 @@ func TestShouldNotBeAbleToSwapTransaction(t *testing.T) {
 	c.Genesis.Next.Transactions[0] = NewTransaction(mallory, malloryPub, 10)
 	if c.Validate() == nil {
 		t.Fatal("Chain should not be valid, because a transaction was swapped out.")
+	}
+}
+
+func TestGenesisIsTheSameEverywhere(t *testing.T) {
+	if CreateChain(2).Genesis.Hash != CreateChain(2).Genesis.Hash {
+		t.Fatal("Two chains with the same difficulty should share a genesis block")
+	}
+}
+
+// copyBlocks round-trips blocks through JSON, as if they came from a peer
+func copyBlocks(t *testing.T, blocks []*Block) []*Block {
+	bytes, err := json.Marshal(blocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []*Block
+	if err := json.Unmarshal(bytes, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestAppendBlock(t *testing.T) {
+	a := CreateChain(1)
+	a.AddBlock(NewBlock(map[string]string{"Name": "Block 1"}))
+	a.AddBlock(NewBlock(map[string]string{"Name": "Block 2"}))
+	blocks := copyBlocks(t, a.Blocks())
+
+	b := CreateChain(1)
+	if b.AppendBlock(blocks[2]) != ErrNotOnTip {
+		t.Fatal("Block 2 should not go straight onto the genesis block")
+	}
+	for _, blk := range blocks[1:] {
+		if err := b.AppendBlock(blk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if b.Len() != 3 || b.Tip().Hash != a.Tip().Hash {
+		t.Fatal("Chain should match the one the blocks came from")
+	}
+}
+
+func TestAppendBlockRejectsUnminedBlock(t *testing.T) {
+	c := CreateChain(3)
+	b := NewBlock(map[string]string{"Name": "Block 1"})
+	b.PreviousHash = c.Genesis.Hash
+	b.Idx = 1
+	b.Hash = b.GenerateHash()
+	if err := c.AppendBlock(b); err == nil || err == ErrNotOnTip {
+		t.Fatalf("Unmined block should be rejected as invalid, got %v", err)
+	}
+}
+
+func TestLoadChain(t *testing.T) {
+	a := CreateChain(1)
+	a.AddBlock(NewBlock(map[string]string{"Name": "Block 1"}))
+	a.AddBlock(NewBlock(map[string]string{"Name": "Block 2"}))
+
+	c, err := LoadChain(1, copyBlocks(t, a.Blocks()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Len() != 3 || c.Tip().Hash != a.Tip().Hash || c.Validate() != nil {
+		t.Fatal("Loaded chain should match the original")
+	}
+
+	tampered := copyBlocks(t, a.Blocks())
+	tampered[1].Data["Name"] = "I am now trying to screw you over"
+	if _, err := LoadChain(1, tampered); err == nil {
+		t.Fatal("LoadChain should reject a tampered block")
 	}
 }

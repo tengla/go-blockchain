@@ -1,24 +1,33 @@
 package main
 
 import (
-	"fmt"
+	"flag"
+	"log"
+	"strings"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/tengla/fibro/node"
+)
+
+var (
+	addr       = flag.String("addr", ":3000", "The address to listen on")
+	peers      = flag.String("peers", "", "Comma-separated peer URLs, such as http://localhost:3001")
+	difficulty = flag.Int("difficulty", 3, "The mining difficulty, which must match the peers'")
 )
 
 func main() {
 
-	app := fiber.New()
+	flag.Parse()
 
-	app.Get("/", func(c *fiber.Ctx) error {
-		return c.SendString("Hello, World 👋!")
-	})
+	var peerList []string
+	for _, p := range strings.Split(*peers, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			peerList = append(peerList, strings.TrimSuffix(p, "/"))
+		}
+	}
 
-	app.Get("/:name", func(c *fiber.Ctx) error {
-		return c.JSON(&fiber.Map{
-			"Message": fmt.Sprintf("Hello %s", c.Params("name")),
-		})
-	})
+	n := node.New(*difficulty, peerList...)
+	n.Sync()
 
-	app.Listen(":3000")
+	log.Printf("listening on %s with %d peers", *addr, len(peerList))
+	log.Fatal(n.App().Listen(*addr))
 }
